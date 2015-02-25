@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"github.com/daddye/vips"
 	image "image"
+	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
 	png "image/png"
@@ -18,8 +20,8 @@ import (
  */
 type GazeImage struct {
 	// The root image for this GazeImage (raw image data)
-	Image *image.Image
-	Gazed *image.Image
+	Image *image.RGBA
+	Gazed *image.RGBA
 	// A pointer to the parent GazeImage, if any. If no parent then this is null.
 	Parent *GazeImage
 	// Children GazeImage's that occupy a subset of this image space.
@@ -27,9 +29,38 @@ type GazeImage struct {
 
 	// These coordinates specify the location in the parent image that this
 	// GazeImage occupies. `Slices` is the maximum number of slices.
-	X      int32
-	Y      int32
-	Slices int32
+	X      int
+	Y      int
+	Slices int
+}
+
+/**
+ * Return a configuration for the given image that should be applied to each gazeling
+ * during the splitting process.
+ */
+func getVipsConfig(img *GazeImage) vips.Options {
+	return vips.Options{
+		Width:        (img.Image.Bounds().Max.X - img.Image.Bounds().Min.X) / img.Slices,
+		Height:       (img.Image.Bounds().Max.Y - img.Image.Bounds().Min.Y) / img.Slices,
+		Crop:         false,
+		Extend:       vips.EXTEND_WHITE,
+		Interpolator: vips.BILINEAR,
+		Gravity:      vips.CENTRE,
+		Quality:      95,
+	}
+}
+
+/**
+ * Copy an image into a new RGBA object.
+ */
+func imgToRGBA(img *image.Image) *image.RGBA {
+	b := (*img).(interface {
+		Bounds() image.Rectangle
+	}).Bounds()
+	dst := image.NewRGBA(b)
+
+	draw.Draw(dst, b, *img, b.Min, draw.Src)
+	return dst
 }
 
 /**
@@ -51,25 +82,33 @@ func LoadImage(filename string) *GazeImage {
 	}
 
 	return &GazeImage{
-		Image: &img,
+		Image: imgToRGBA(&img),
 	}
 }
 
 /**
  * Split the image into `n` different parts, all as close to
- * equally sized as possible. Each part hsould be
+ * equally sized as possible. This adds the data to the object
+ * passed in as the first parameter and does not create a copy.
  */
 func SplitImage(img *GazeImage, n int) {
-	bounds := img.Image.Bounds()
-	xDiff := bounds.Max.X - bounds.Min.X
-	yDiff := bounds.Max.Y - bounds.Min.Y
+	xDiff := (img.Image.Bounds().Max.X - img.Image.Bounds().Min.X) / n
+	yDiff := (img.Image.Bounds().Max.Y - img.Image.Bounds().Min.Y) / n
 
 	for x := 0; x < n; x++ {
 		for y := 0; y < n; y++ {
-			// Get the subset of the image.
+			// Create the rectangle that should be extracted.
+			region := image.Rect(x*xDiff, y*yDiff, (x+1)*xDiff, (y+1)*yDiff)
+			// Get the subimage defined by the region above.
+			subset := img.Image.SubImage(region)
+
+			// Build a GazeImage from the subimage and associated metadata.
 			img.Gazelings = append(img.Gazelings, &GazeImage{
-				Image:  subset,
+				Image:  imgToRGBA(&subset),
 				Parent: img,
+				X:      x,
+				Y:      y,
+				Slices: n,
 			})
 		}
 	}
@@ -111,22 +150,21 @@ func Gaze(img *GazeImage) {
  * this should simply populate the .Gazed field of the provided
  * GazedImage.
  */
-func Assemble(img *GazeImage) *image.Image {
+func Assemble(img *GazeImage) *image.RGBA {
 	// Create an image of the same size.
-	newImg := image.NewAlpha(img.Image.Bounds())
+	newImg := image.NewRGBA(img.Image.Bounds())
 
-	xDiff := (newImg.Bounds().Max.X - newImg.Bounds().Min.X) / img.Slices
-	yDiff := (newImg.Bounds().Max.Y - newImg.Bounds().Min.Y) / img.Slices
+	xDiff := newImg.Bounds().Size().X / img.Slices
+	yDiff := newImg.Bounds().Size().Y / img.Slices
 
 	// Run through each of the subimages and copy over pixels.
-	for i := 0; i < img.Slices; i++ {
+	for i := 0; i < (img.Slices * img.Slices); i++ {
 		sub := img.Gazelings[i]
 
-		for x := 0; x < xDiff; x++ {
-			for y := 0; y < yDiff; y++ {
-				newImg.SetAlpha(x*sub.X, y*sub.Y, sub.At(x, y))
-			}
-		}
+		fmt.Println(fmt.Sprintf("Assembling gazeling (%d, %d) at (%d, %d)", sub.X, sub.Y, sub.X*xDiff, sub.Y*yDiff))
+
+		area := image.Rect(sub.X*xDiff, sub.Y*yDiff, (sub.X+1)*xDiff, (sub.Y+1)*yDiff)
+		draw.Draw(newImg, area, sub.Image, sub.Image.Bounds().Min, draw.Src)
 	}
 
 	return newImg
@@ -137,9 +175,19 @@ func Assemble(img *GazeImage) *image.Image {
  * called orig_{fnSuffix} while the other is called gazed_{fnSuffix}.
  */
 func SaveImage(img *GazeImage, fnSuffix string) {
-	fp, err := os.Create(fmt.Sprintf("orig_%s.png", fnSuffix))
+	fp, err := os.Create(fmt.Sprintf("output/orig_%s.png", fnSuffix))
 	png.Encode(fp, img.Image)
 
-	fp, err = os.Create(fmt.Sprintf("gazed_%s.png", fnSuffix))
-	png.Encode(fp, img.Image)
+	if err != nil {
+		log.Fatal("Couldn't save image to " + fmt.Sprintf("output/orig_%s.png", fnSuffix))
+	}
+
+	if img.Gazed != nil {
+		fp, err = os.Create(fmt.Sprintf("output/gazed_%s.png", fnSuffix))
+		png.Encode(fp, img.Image)
+
+		if err != nil {
+			log.Fatal("Couldn't save image to " + fmt.Sprintf("output/gazed_%s.png", fnSuffix))
+		}
+	}
 }
