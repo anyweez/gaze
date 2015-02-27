@@ -13,7 +13,7 @@ import (
 )
 
 const API_URL = "https://api.flickr.com/services/rest/?method=flickr.photosets.getPhotos&api_key=%s&photoset_id=%d&extras=url_l,license&media=photos&format=json&nojsoncallback=1"
-const API_KEY = ""
+const API_KEY = "ac5cc91868b4e606976c32a8e5edae69"
 
 type FlickrAPIResponse struct {
 	Photoset FlickrAPIPhotoset

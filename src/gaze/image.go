@@ -119,27 +119,66 @@ func LoadPool(directory string, target *GazeImage) []*GazeImage {
 			newImageRatio = Round(newImageRatio*10) / 10
 
 			// If the ratios match, resize the image to be the max size of a gazeling and store it in the pool.
-			if newImageRatio == targetImageRatio {
-				if target.Slices > 0 {
-					thumb := resize.Thumbnail(
-						uint(target.Image.Bounds().Size().X/target.Slices),
-						uint(target.Image.Bounds().Size().Y/target.Slices),
-						gaze.Image,
-						resize.NearestNeighbor,
-					)
-					gaze.Image = imgToRGBA(&thumb)
+			if math.Abs(newImageRatio-targetImageRatio) < .1 {
+				// Adjust the ratio to be precisely what the target ratio is, cropping where necessary.
+				if newImageRatio != targetImageRatio {
+					AdjustImageRatio(gaze, targetImageRatio)
 				}
+
+				TrimImage(gaze, target.Slices)
+				thumb := resize.Thumbnail(
+					uint(target.Image.Bounds().Size().X/target.Slices),
+					uint(target.Image.Bounds().Size().Y/target.Slices),
+					gaze.Image,
+					resize.NearestNeighbor,
+				)
+
+				gaze.Image = imgToRGBA(&thumb)
 
 				pool = append(pool, gaze)
 				// TODO: temporary; remove this
-				SaveImage(gaze, fmt.Sprintf("pool-%d", i))
-			} else {
-				log.Println(fmt.Sprintf("Skipping image `%s` with image ratio of %f", file.Name(), newImageRatio))
+				//				SaveImage(gaze, fmt.Sprintf("pool-%d", i))
 			}
 		}
+		fmt.Print(fmt.Sprintf("Loading image pool: %.1f%%\r", 100*(float64(i+1)/float64(len(files)))))
 	}
-
+	fmt.Println()
 	return pool
+}
+
+/**
+ * Make sure that img has exactly the specified image ratio. This operation always
+ * results in a reduction of the larger dimension, not an expansion of the smaller one.
+ */
+func AdjustImageRatio(img *GazeImage, desired float64) {
+	actual := float64(img.Image.Bounds().Size().X) / float64(img.Image.Bounds().Size().Y)
+	actual = Round(actual*10) / 10
+
+	if desired > actual {
+		desiredY := float64(img.Image.Bounds().Size().X) / desired
+		// fmt.Println(fmt.Sprintf("Adjusting Y image dimensions from %dx%d to %dx%d (ratio=%.2f)",
+		// 	img.Image.Bounds().Max.X,
+		// 	img.Image.Bounds().Max.Y,
+		// 	img.Image.Bounds().Max.X,
+		// 	int(desiredY),
+		// 	actual,
+		// ))
+
+		sub := img.Image.SubImage(image.Rect(0, 0, img.Image.Bounds().Size().X, int(desiredY)))
+		img.Image = imgToRGBA(&sub)
+	} else {
+		desiredX := float64(img.Image.Bounds().Size().Y) * desired
+		// fmt.Println(fmt.Sprintf("Adjusting X image dimensions from %dx%d to %dx%d (ratio=%.2f)",
+		// 	img.Image.Bounds().Max.X,
+		// 	img.Image.Bounds().Max.Y,
+		// 	int(desiredX),
+		// 	img.Image.Bounds().Max.Y,
+		// 	actual,
+		// ))
+
+		sub := img.Image.SubImage(image.Rect(0, 0, int(desiredX), img.Image.Bounds().Size().Y))
+		img.Image = imgToRGBA(&sub)
+	}
 }
 
 /**
@@ -288,7 +327,7 @@ func Assemble(img *GazeImage) *image.RGBA {
 	// Run through each of the subimages and copy over pixels.
 	for x := 0; x < img.Slices; x++ {
 		for y := 0; y < img.Slices; y++ {
-			sub := img.Gazelings[y*img.Slices+x]
+			sub := img.Gazelings[x*img.Slices+y]
 
 			// fmt.Println(fmt.Sprintf("(%d, %d) to (%d, %d)", x*xDiff, y*yDiff, (x+1)*xDiff, (y+1)*yDiff))
 			// fmt.Println(fmt.Sprintf("Dimensions of gazeling: %d,%d", sub.Image.Bounds().Size().X, sub.Image.Bounds().Size().Y))
